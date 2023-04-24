@@ -1,0 +1,135 @@
+import requests
+from bs4 import BeautifulSoup
+import time
+from datetime import datetime
+from discord_webhook import DiscordWebhook, DiscordEmbed
+import threading
+import tkinter as tk
+from tkinter import messagebox
+
+def scrape_product_data(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
+    }
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.content, 'html.parser')
+
+    # Find the product name
+    product_name_element = soup.find('h1', {'data-talos': 'labelPdpProductTitle'})
+    product_name = product_name_element.text.strip() if product_name_element else 'Unknown'
+
+    # Find the product price
+    product_price_element = soup.find('div', class_='price-card')
+    if product_price_element:
+        sr_only_element = product_price_element.find('span', class_='sr-only')
+        product_price = sr_only_element.text.strip() if sr_only_element else 'Unknown'
+    else:
+        product_price = 'Unknown'
+
+    # Find the stock status
+    add_to_cart_button = soup.find('button', {'data-talos': 'buttonAddToCart'})
+    if add_to_cart_button and not add_to_cart_button.has_attr('disabled'):
+        stock_status = 'In Stock'
+    else:
+        stock_status = 'Out of Stock'
+
+    # Find the product image
+    img_element = soup.find('img', class_='carousel-image current-image')
+    if img_element and img_element.has_attr('src'):
+        product_image = 'https:' + img_element['src']
+    else:
+        product_image = None
+
+    return {
+        'name': product_name,
+        'price': product_price,
+        'stock_status': stock_status,
+        'image': product_image
+    }
+
+def is_item_in_stock(url):
+    product_data = scrape_product_data(url)
+    return product_data['stock_status'] == 'In Stock'
+
+def start_scraping(url, webhook_url):
+    def scraping_thread(url, webhook_url):
+        out_of_stock_interval = 30 * 60  # 30 minutes
+        out_of_stock_last_sent = 0
+
+        while True:
+            product_data = scrape_product_data(url)
+            current_time = time.time()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            if product_data['stock_status'] == 'In Stock':
+                embed = DiscordEmbed(
+                    title=product_data['name'],
+                    description=f"Price: {product_data['price']}\n[Link to product page]({url})\n\nTimestamp: {timestamp}",
+                    color=242424
+                )
+
+                if product_data['image']:
+                    embed.set_image(url=product_data['image'])
+
+                webhook = DiscordWebhook(url=webhook_url)
+                webhook.add_embed(embed)
+                webhook.execute()
+
+            elif current_time - out_of_stock_last_sent >= out_of_stock_interval:
+                embed = DiscordEmbed(
+                    title=product_data['name'],
+                    description=f"The item is still out of stock.\n[Link to product page]({url})\n\nTimestamp: {timestamp}",
+                    color=0xFF0000
+                )
+
+                if product_data['image']:
+                    embed.set_image(url=product_data['image'])
+
+                webhook = DiscordWebhook(url=webhook_url)
+                webhook.add_embed(embed)
+                webhook.execute()
+
+                out_of_stock_last_sent = current_time
+
+            time.sleep(30)  # Wait for 30 seconds
+
+    t = threading.Thread(target=scraping_thread, args=(url, webhook_url))
+    t.start()
+
+def on_start_button_click():
+    url = url_entry.get()
+    webhook_url = webhook_url_entry.get()
+
+    if not url or not webhook_url:
+        messagebox.showerror("Error", "Please enter both URL and Webhook URL")
+        return
+
+    start_scraping(url, webhook_url)
+
+# Create the UI using tkinter
+root = tk.Tk()
+root.title("Product Stock Checker")
+
+frame = tk.Frame(root, padx=20, pady=20, bg='white')
+frame.pack(padx=30, pady=30)
+
+frame.grid_rowconfigure(0, pad=10)
+frame.grid_rowconfigure(1, pad=10)
+frame.grid_columnconfigure(0, pad=10)
+frame.grid_columnconfigure(1, pad=10)
+
+url_label = tk.Label(frame, text="Product URL:", bg='white')
+url_label.grid(row=0, column=0, sticky="w")
+url_entry = tk.Entry(frame, width=50, bg='white')
+url_entry.grid(row=0, column=1)
+
+webhook_url_label = tk.Label(frame, text="Webhook URL:", bg='white')
+webhook_url_label.grid(row=1, column=0, sticky="w")
+webhook_url_entry = tk.Entry(frame, width=50, bg='white')
+webhook_url_entry.grid(row=1, column=1)
+
+start_button = tk.Button(frame, text="Start", command=on_start_button_click)
+start_button.grid(row=2, column=1, pady=10, sticky="e")
+
+root.configure(bg='white')
+root.mainloop()
